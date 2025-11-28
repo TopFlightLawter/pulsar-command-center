@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Pulsar Command Center</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            font-family: 'SF Mono', 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ffaa;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #00aa88;
+            border-radius: 4px;
+        }
+        
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 170, 0.3); }
+            50% { box-shadow: 0 0 20px rgba(0, 255, 170, 0.6); }
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .connecting {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        .motor-active {
+            animation: glow 0.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+        
+        // ============================================================================
+        // CONFIGURATION
+        // ============================================================================
+        const DEFAULT_HOST = 'pulsar.local';
+        const WS_PORT = 81;
+        
+        // ============================================================================
+        // MAIN APP COMPONENT
+        // ============================================================================
+        function App() {
+            const [connectionStatus, setConnectionStatus] = useState('disconnected');
+            const [currentTime, setCurrentTime] = useState('--:-- --');
+            const [currentDate, setCurrentDate] = useState('--/--');
+            const [motorState, setMotorState] = useState({ m1: false, m2: false, intensity: 0 });
+            const [alarmState, setAlarmState] = useState({ armed: false, nextAlarm: '--:-- --', remaining: '--' });
+            const [config, setConfig] = useState({});
+            const [activeTab, setActiveTab] = useState('control');
+            const [wsHost, setWsHost] = useState(localStorage.getItem('pulsarHost') || DEFAULT_HOST);
+            const [showSettings, setShowSettings] = useState(false);
+            const [toast, setToast] = useState(null);
+            
+            const wsRef = useRef(null);
+            const reconnectTimerRef = useRef(null);
+            
+            // Show toast notification
+            const showToast = useCallback((message, type = 'info') => {
+                setToast({ message, type });
+                setTimeout(() => setToast(null), 3000);
+            }, []);
+            
+            // WebSocket connection
+            const connect = useCallback(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) return;
+                
+                setConnectionStatus('connecting');
+                const wsUrl = `ws://${wsHost}:${WS_PORT}`;
+                console.log('Connecting to:', wsUrl);
+                
+                try {
+                    wsRef.current = new WebSocket(wsUrl);
+                    
+                    wsRef.current.onopen = () => {
+                        console.log('WebSocket connected');
+                        setConnectionStatus('connected');
+                        showToast('Connected to Pulsar!', 'success');
+                        
+                        // Request current config
+                        wsRef.current.send(JSON.stringify({ type: 'getConfig' }));
+                        
+                        if (reconnectTimerRef.current) {
+                            clearInterval(reconnectTimerRef.current);
+                            reconnectTimerRef.current = null;
+                        }
+                    };
+                    
+                    wsRef.current.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        setConnectionStatus('disconnected');
+                        scheduleReconnect();
+                    };
+                    
+                    wsRef.current.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        setConnectionStatus('disconnected');
+                    };
+                    
+                    wsRef.current.onmessage = (event) => {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            handleMessage(msg);
+                        } catch (e) {
+                            console.error('Parse error:', e);
+                        }
+                    };
+                } catch (e) {
+                    console.error('Connection failed:', e);
+                    setConnectionStatus('disconnected');
+                    scheduleReconnect();
+                }
+            }, [wsHost, showToast]);
+            
+            const scheduleReconnect = useCallback(() => {
+                if (!reconnectTimerRef.current) {
+                    reconnectTimerRef.current = setInterval(() => {
+                        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+                            connect();
+                        }
+                    }, 5000);
+                }
+            }, [connect]);
+            
+            const handleMessage = useCallback((msg) => {
+                switch (msg.type) {
+                    case 'time':
+                        setCurrentTime(msg.value || msg.time);
+                        if (msg.date) setCurrentDate(msg.date);
+                        break;
+                    case 'motor':
+                        setMotorState({ m1: msg.m1, m2: msg.m2, intensity: msg.intensity || 0 });
+                        break;
+                    case 'alarm':
+                        setAlarmState({
+                            armed: msg.armed,
+                            nextAlarm: msg.time || msg.nextAlarm || '--:-- --',
+                            remaining: msg.remaining || '--'
+                        });
+                        break;
+                    case 'configAll':
+                        setConfig(msg.config || {});
+                        break;
+                    case 'configSaved':
+                        setConfig(prev => ({ ...prev, [msg.param]: msg.value }));
+                        break;
+                    case 'flashSaved':
+                        showToast('Configuration saved to flash!', 'success');
+                        break;
+                    case 'ack':
+                        console.log('ACK:', msg.message);
+                        break;
+                    case 'error':
+                        showToast(msg.message, 'error');
+                        break;
+                }
+            }, [showToast]);
+            
+            // Send command to ESP32
+            const send = useCallback((obj) => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify(obj));
+                } else {
+                    showToast('Not connected to Pulsar', 'error');
+                }
+            }, [showToast]);
+            
+            // Connect on mount
+            useEffect(() => {
+                connect();
+                return () => {
+                    if (wsRef.current) wsRef.current.close();
+                    if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
+                };
+            }, [connect]);
+            
+            // Save host to localStorage
+            const saveHost = (newHost) => {
+                setWsHost(newHost);
+                localStorage.setItem('pulsarHost', newHost);
+                if (wsRef.current) wsRef.current.close();
+                setTimeout(connect, 500);
+            };
+            
+            return (
+                <div style={{ padding: '15px', paddingBottom: '120px' }}>
+                    <Header 
+                        connectionStatus={connectionStatus}
+                        onSettingsClick={() => setShowSettings(true)}
+                        onReconnect={connect}
+                    />
+                    
+                    <TimeDisplay time={currentTime} date={currentDate} />
+                    
+                    <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
+                    
+                    {activeTab === 'control' && (
+                        <ControlTab 
+                            alarmState={alarmState}
+                            motorState={motorState}
+                            onToggleArmed={() => send({ type: 'setAlarmArmed', armed: !alarmState.armed })}
+                            onStopAll={() => send({ type: 'stopAll' })}
+                            onTest={(pattern) => send({ type: 'testPattern', pattern })}
+                        />
+                    )}
+                    
+                    {activeTab === 'pwm' && (
+                        <PWMTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    {activeTab === 'pattern' && (
+                        <PatternTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    {activeTab === 'alarm' && (
+                        <AlarmTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    <BottomBar 
+                        onRefresh={() => send({ type: 'getConfig' })}
+                        onSave={() => send({ type: 'saveToFlash' })}
+                    />
+                    
+                    {showSettings && (
+                        <SettingsModal 
+                            host={wsHost}
+                            onSave={saveHost}
+                            onClose={() => setShowSettings(false)}
+                        />
+                    )}
+                    
+                    {toast && <Toast message={toast.message} type={toast.type} />}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // HEADER COMPONENT
+        // ============================================================================
+        function Header({ connectionStatus, onSettingsClick, onReconnect }) {
+            const statusColors = {
+                connected: { bg: 'rgba(0, 255, 170, 0.2)', border: '#00ffaa', text: '#00ffaa' },
+                connecting: { bg: 'rgba(255, 170, 0, 0.2)', border: '#ffaa00', text: '#ffaa00' },
+                disconnected: { bg: 'rgba(255, 68, 68, 0.2)', border: '#ff4444', text: '#ff4444' }
+            };
+            
+            const colors = statusColors[connectionStatus];
+            
+            return (
+                <div style={{
+                    textAlign: 'center',
+                    padding: '20px 0',
+                    borderBottom: '2px solid #00ffaa',
+                    marginBottom: '20px'
+                }}>
+                    <div style={{
+                        fontSize: '24px',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 10px #00ffaa',
+                        letterSpacing: '2px'
+                    }}>
+                        ⚡ PULSAR COMMAND CENTER ⚡
+                    </div>
+                    
+                    <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'center', gap: '10px' }}>
+                        <button
+                            onClick={connectionStatus === 'disconnected' ? onReconnect : undefined}
+                            className={connectionStatus === 'connecting' ? 'connecting' : ''}
+                            style={{
+                                padding: '8px 20px',
+                                borderRadius: '20px',
+                                border: `2px solid ${colors.border}`,
+                                background: colors.bg,
+                                color: colors.text,
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                fontFamily: 'inherit',
+                                cursor: connectionStatus === 'disconnected' ? 'pointer' : 'default'
+                            }}
+                        >
+                            {connectionStatus.toUpperCase()}
+                        </button>
+                        
+                        <button
+                            onClick={onSettingsClick}
+                            style={{
+                                width: '36px',
+                                height: '36px',
+                                borderRadius: '50%',
+                                border: '2px solid #00aa88',
+                                background: 'transparent',
+                                color: '#00aa88',
+                                fontSize: '18px',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            ⚙
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // TIME DISPLAY
+        // ============================================================================
+        function TimeDisplay({ time, date }) {
+            return (
+                <div style={{ textAlign: 'center', margin: '20px 0' }}>
+                    <div style={{
+                        fontSize: '48px',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 20px #00ffaa'
+                    }}>
+                        {time}
+                    </div>
+                    <div style={{ fontSize: '18px', color: '#00cc88', marginTop: '5px' }}>
+                        {date}
+                    </div>
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // TAB BAR
+        // ============================================================================
+        function TabBar({ activeTab, onTabChange }) {
+            const tabs = [
+                { id: 'control', label: 'CONTROL' },
+                { id: 'pwm', label: 'PWM' },
+                { id: 'pattern', label: 'PATTERN' },
+                { id: 'alarm', label: 'ALARM' }
+            ];
+            
+            return (
+                <div style={{
+                    display: 'flex',
+                    gap: '5px',
+                    marginBottom: '20px',
+                    overflowX: 'auto',
+                    paddingBottom: '5px'
+                }}>
+                    {tabs.map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => onTabChange(tab.id)}
+                            style={{
+                                padding: '12px 20px',
+                                border: `2px solid ${activeTab === tab.id ? '#00ffaa' : '#00aa88'}`,
+                                borderRadius: '8px',
+                                background: activeTab === tab.id ? '#00ffaa' : 'transparent',
+                                color: activeTab === tab.id ? '#0a0a0a' : '#00aa88',
+                                fontFamily: 'inherit',
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap',
+                                transition: 'all 0.2s'
+                            }}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // PANEL COMPONENT
+        // ============================================================================
+        function Panel({ title, children }) {
+            return (
+                <div style={{
+                    background: 'rgba(0, 255, 170, 0.05)',
+                    border: '2px solid #00ffaa',
+                    borderRadius: '12px',
+                    padding: '20px',
+                    marginBottom: '20px'
+                }}>
+                    <div style={{
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                        color: '#00ddaa',
+                        marginBottom: '15px',
+                        paddingBottom: '10px',
+                        borderBottom: '1px solid #00aa88'
+                    }}>
+                        {title}
+                    </div>
+                    {children}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // CONTROL TAB
+        // ============================================================================
+        function ControlTab({ alarmState, motorState, onToggleArmed, onStopAll, onTest }) {
+            return (
+                <>
+                    <Panel title="🎯 ALARM STATUS">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                            <span>System Armed</span>
+                            <ToggleButton active={alarmState.armed} onClick={onToggleArmed} />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>Next Alarm</span>
+                            <span style={{ fontSize: '24px', fontWeight: 'bold' }}>{alarmState.nextAlarm}</span>
+                        </div>
+                        {alarmState.remaining !== '--' && (
+                            <div style={{ textAlign: 'center', marginTop: '10px', color: '#00aa88' }}>
+                                Time remaining: {alarmState.remaining}
+                            </div>
+                        )}
+                    </Panel>
+                    
+                    <Panel title="🔥 MOTOR STATUS">
+                        <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', margin: '15px 0' }}>
+                            <MotorIndicator label="M1" active={motorState.m1} />
+                            <MotorIndicator label="M2" active={motorState.m2} />
+                        </div>
+                        <IntensityBar intensity={motorState.intensity} />
+                    </Panel>
+                    
+                    <Panel title="🚨 QUICK ACTIONS">
+                        <ActionButton 
+                            label="🛑 EMERGENCY STOP" 
+                            variant="danger" 
+                            onClick={onStopAll} 
+                        />
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '10px' }}>
+                            <ActionButton 
+                                label="⚡ PWM TEST" 
+                                variant="warning" 
+                                onClick={() => onTest('pwmWarning')} 
+                            />
+                            <ActionButton 
+                                label="🔥 PATTERN" 
+                                variant="warning" 
+                                onClick={() => onTest('progressive')} 
+                            />
+                        </div>
+                    </Panel>
+                </>
+            );
+        }
+        
+        // ============================================================================
+        // PWM TAB
+        // ============================================================================
+        function PWMTab({ config, onConfigChange }) {
+            return (
+                <Panel title="⚡ PWM WARNING SETTINGS">
+                    <ParamControl
+                        label="Warning Duration"
+                        value={config.PWM_WARNING_DURATION || 6000}
+                        unit="ms"
+                        step={500}
+                        min={1000}
+                        max={15000}
+                        onChange={(v) => onConfigChange('PWM_WARNING_DURATION', v)}
+                    />
+                    <ParamControl
+                        label="Pause After Warning"
+                        value={config.WARNING_PAUSE_DURATION || 3000}
+                        unit="ms"
+                        step={500}
+                        min={1000}
+                        max={10000}
+                        onChange={(v) => onConfigChange('WARNING_PAUSE_DURATION', v)}
+                    />
+                </Panel>
+            );
+        }
+        
+        // ============================================================================
+        // PATTERN TAB
+        // ============================================================================
+        function PatternTab({ config, onConfigChange }) {
+            return (
+                <Panel title="🔥 PROGRESSIVE PATTERN">
+                    <ParamControl
+                        label="Starting Intensity"
+                        value={config.MAIN_STARTING_INTENSITY || 8}
+                        unit="%"
+                        step={1}
+                        min={1}
+                        max={30}
+                        onChange={(v) => onConfigChange('MAIN_STARTING_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Intensity Increment"
+                        value={config.MAIN_INTENSITY_INCREMENT || 2}
+                        unit="%"
+                        step={1}
+                        min={1}
+                        max={10}
+                        onChange={(v) => onConfigChange('MAIN_INTENSITY_INCREMENT', v)}
+                    />
+                    <ParamControl
+                        label="Max Intensity"
+                        value={config.MAIN_MAX_INTENSITY || 100}
+                        unit="%"
+                        step={5}
+                        min={50}
+                        max={100}
+                        onChange={(v) => onConfigChange('MAIN_MAX_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Fires Per Intensity"
+                        value={config.MAIN_FIRES_PER_INTENSITY || 1}
+                        unit=""
+                        step={1}
+                        min={1}
+                        max={15}
+                        onChange={(v) => onConfigChange('MAIN_FIRES_PER_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Motor 2 Offset"
+                        value={config.MOTOR2_OFFSET_MS || 37}
+                        unit="ms"
+                        step={10}
+                        min={0}
+                        max={2000}
+                        onChange={(v) => onConfigChange('MOTOR2_OFFSET_MS', v)}
+                    />
+                </Panel>
+            );
+        }
+        
+        // ============================================================================
+        // ALARM TAB
+        // ============================================================================
+        function AlarmTab({ config, onConfigChange }) {
+            return (
+                <>
+                    <Panel title="⏰ ALARM WINDOW START">
+                        <TimePicker
+                            hour={config.ALARM_START_HOUR ?? 21}
+                            minute={config.ALARM_START_MINUTE ?? 30}
+                            onHourChange={(h) => onConfigChange('ALARM_START_HOUR', h)}
+                            onMinuteChange={(m) => onConfigChange('ALARM_START_MINUTE', m)}
+                        />
+                    </Panel>
+                    
+                    <Panel title="⏰ ALARM WINDOW END">
+                        <TimePicker
+                            hour={config.ALARM_END_HOUR ?? 23}
+                            minute={config.ALARM_END_MINUTE ?? 0}
+                            onHourChange={(h) => onConfigChange('ALARM_END_HOUR', h)}
+                            onMinuteChange={(m) => onConfigChange('ALARM_END_MINUTE', m)}
+                        />
+                    </Panel>
+                    
+                    <Panel title="🔔 ALARM SETTINGS">
+                        <ParamControl
+                            label="Minutes Between Alarms"
+                            value={config.ALARM_INTERVAL_MINUTES || 4}
+                            unit="min"
+                            step={1}
+                            min={1}
+                            max={30}
+                            onChange={(v) => onConfigChange('ALARM_INTERVAL_MINUTES', v)}
+                        />
+                        <ParamControl
+                            label="Snooze Duration"
+                            value={(config.SNOOZE_DURATION || 60000) / 1000}
+                            unit="sec"
+                            step={10}
+                            min={30}
+                            max={600}
+                            onChange={(v) => onConfigChange('SNOOZE_DURATION', v * 1000)}
+                        />
+                    </Panel>
+                </>
+            );
+        }
+        
+        // ============================================================================
+        // UI COMPONENTS
+        // ============================================================================
+        function ToggleButton({ active, onClick }) {
+            return (
+                <button
+                    onClick={onClick}
+                    style={{
+                        width: '70px',
+                        height: '36px',
+                        borderRadius: '18px',
+                        border: '2px solid #00ffaa',
+                        background: active ? '#00ffaa' : 'transparent',
+                        position: 'relative',
+                        cursor: 'pointer',
+                        transition: 'all 0.3s'
+                    }}
+                >
+                    <div style={{
+                        position: 'absolute',
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: active ? '#0a0a0a' : '#00ffaa',
+                        top: '2px',
+                        left: active ? '36px' : '2px',
+                        transition: 'all 0.3s'
+                    }} />
+                </button>
+            );
+        }
+        
+        function MotorIndicator({ label, active }) {
+            return (
+                <div
+                    className={active ? 'motor-active' : ''}
+                    style={{
+                        width: '60px',
+                        height: '60px',
+                        borderRadius: '50%',
+                        border: '3px solid #00ffaa',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 'bold',
+                        fontSize: '18px',
+                        background: active ? '#00ffaa' : 'transparent',
+                        color: active ? '#0a0a0a' : '#00ffaa',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </div>
+            );
+        }
+        
+        function IntensityBar({ intensity }) {
+            const pct = Math.max(0, Math.min(100, ((intensity - 8) / 92) * 100));
+            
+            return (
+                <>
+                    <div style={{
+                        height: '30px',
+                        background: '#1a1a1a',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '15px',
+                        overflow: 'hidden',
+                        margin: '15px 0'
+                    }}>
+                        <div style={{
+                            height: '100%',
+                            width: `${pct}%`,
+                            background: 'linear-gradient(90deg, #00aa88, #00ffaa)',
+                            transition: 'width 0.3s',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-end',
+                            paddingRight: '10px',
+                            color: '#0a0a0a',
+                            fontWeight: 'bold',
+                            fontSize: '14px'
+                        }}>
+                            {intensity > 0 ? `${intensity}%` : ''}
+                        </div>
+                    </div>
+                    <div style={{ textAlign: 'center', fontSize: '14px', color: '#00aa88' }}>
+                        {intensity > 0 ? `Intensity: ${intensity}%` : 'Ready'}
+                    </div>
+                </>
+            );
+        }
+        
+        function ActionButton({ label, variant, onClick }) {
+            const variants = {
+                primary: 'linear-gradient(135deg, #00aa88, #00ffaa)',
+                danger: 'linear-gradient(135deg, #cc0000, #ff4444)',
+                warning: 'linear-gradient(135deg, #cc8800, #ffaa00)',
+                secondary: 'transparent'
+            };
+            
+            return (
+                <button
+                    onClick={onClick}
+                    style={{
+                        width: '100%',
+                        padding: '18px',
+                        borderRadius: '12px',
+                        border: variant === 'secondary' ? '2px solid #00ffaa' : 'none',
+                        background: variants[variant],
+                        color: variant === 'secondary' ? '#00ffaa' : (variant === 'danger' ? 'white' : '#0a0a0a'),
+                        fontFamily: 'inherit',
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        textTransform: 'uppercase',
+                        letterSpacing: '1px',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </button>
+            );
+        }
+        
+        function ParamControl({ label, value, unit, step, min, max, onChange }) {
+            const handleChange = (delta) => {
+                const newValue = Math.max(min, Math.min(max, value + delta));
+                onChange(newValue);
+            };
+            
+            return (
+                <div style={{ marginBottom: '20px' }}>
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '8px',
+                        fontSize: '14px'
+                    }}>
+                        <span>{label}</span>
+                        <span style={{ fontWeight: 'bold', color: '#00ffaa' }}>
+                            {value}{unit}
+                        </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <ParamButton label="−" onClick={() => handleChange(-step)} />
+                        <div style={{
+                            flex: 1,
+                            textAlign: 'center',
+                            fontSize: '24px',
+                            fontWeight: 'bold',
+                            padding: '10px',
+                            border: '2px solid #00aa88',
+                            borderRadius: '10px',
+                            background: 'rgba(0, 255, 170, 0.1)'
+                        }}>
+                            {value}
+                        </div>
+                        <ParamButton label="+" onClick={() => handleChange(step)} />
+                    </div>
+                </div>
+            );
+        }
+        
+        function ParamButton({ label, onClick }) {
+            return (
+                <button
+                    onClick={onClick}
+                    style={{
+                        width: '50px',
+                        height: '50px',
+                        borderRadius: '10px',
+                        border: '2px solid #00ffaa',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '24px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </button>
+            );
+        }
+        
+        function TimePicker({ hour, minute, onHourChange, onMinuteChange }) {
+            const hour12 = hour % 12 || 12;
+            const isPM = hour >= 12;
+            
+            const adjustHour = (delta) => {
+                let newHour = (hour + delta + 24) % 24;
+                onHourChange(newHour);
+            };
+            
+            const adjustMinute = (delta) => {
+                let newMinute = (minute + delta + 60) % 60;
+                onMinuteChange(newMinute);
+            };
+            
+            const toggleAmPm = () => {
+                onHourChange((hour + 12) % 24);
+            };
+            
+            return (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    margin: '15px 0'
+                }}>
+                    <TimePickerColumn
+                        value={hour12}
+                        label="HOUR"
+                        onUp={() => adjustHour(1)}
+                        onDown={() => adjustHour(-1)}
+                    />
+                    <span style={{ fontSize: '36px' }}>:</span>
+                    <TimePickerColumn
+                        value={String(minute).padStart(2, '0')}
+                        label="MIN"
+                        onUp={() => adjustMinute(5)}
+                        onDown={() => adjustMinute(-5)}
+                    />
+                    <button
+                        onClick={toggleAmPm}
+                        style={{
+                            padding: '10px 15px',
+                            border: '2px solid #00ffaa',
+                            borderRadius: '8px',
+                            background: 'transparent',
+                            color: '#00ffaa',
+                            fontFamily: 'inherit',
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        {isPM ? 'PM' : 'AM'}
+                    </button>
+                </div>
+            );
+        }
+        
+        function TimePickerColumn({ value, label, onUp, onDown }) {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px' }}>
+                    <button onClick={onUp} style={{
+                        width: '50px',
+                        height: '40px',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '20px',
+                        cursor: 'pointer'
+                    }}>▲</button>
+                    <div style={{ fontSize: '36px', fontWeight: 'bold', width: '60px', textAlign: 'center' }}>
+                        {value}
+                    </div>
+                    <button onClick={onDown} style={{
+                        width: '50px',
+                        height: '40px',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '20px',
+                        cursor: 'pointer'
+                    }}>▼</button>
+                    <div style={{ fontSize: '12px', color: '#00aa88' }}>{label}</div>
+                </div>
+            );
+        }
+        
+        function BottomBar({ onRefresh, onSave }) {
+            return (
+                <div style={{
+                    position: 'fixed',
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    background: '#0a0a0a',
+                    borderTop: '2px solid #00ffaa',
+                    padding: '15px',
+                    display: 'flex',
+                    gap: '10px'
+                }}>
+                    <button
+                        onClick={onRefresh}
+                        style={{
+                            flex: 1,
+                            padding: '18px',
+                            borderRadius: '12px',
+                            border: '2px solid #00ffaa',
+                            background: 'transparent',
+                            color: '#00ffaa',
+                            fontFamily: 'inherit',
+                            fontSize: '16px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        ↻ REFRESH
+                    </button>
+                    <button
+                        onClick={onSave}
+                        style={{
+                            flex: 1,
+                            padding: '18px',
+                            borderRadius: '12px',
+                            border: 'none',
+                            background: 'linear-gradient(135deg, #00aa88, #00ffaa)',
+                            color: '#0a0a0a',
+                            fontFamily: 'inherit',
+                            fontSize: '16px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        💾 SAVE TO DEVICE
+                    </button>
+                </div>
+            );
+        }
+        
+        function SettingsModal({ host, onSave, onClose }) {
+            const [inputHost, setInputHost] = useState(host);
+            
+            return (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.9)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '20px',
+                    zIndex: 1000
+                }}>
+                    <div style={{
+                        background: '#0d1b0f',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '12px',
+                        padding: '25px',
+                        width: '100%',
+                        maxWidth: '400px'
+                    }}>
+                        <h2 style={{ marginBottom: '20px', color: '#00ffaa' }}>⚙ Settings</h2>
+                        
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', color: '#00aa88' }}>
+                                Pulsar Host Address
+                            </label>
+                            <input
+                                type="text"
+                                value={inputHost}
+                                onChange={(e) => setInputHost(e.target.value)}
+                                placeholder="pulsar.local or 192.168.1.x"
+                                style={{
+                                    width: '100%',
+                                    padding: '12px',
+                                    border: '2px solid #00aa88',
+                                    borderRadius: '8px',
+                                    background: '#1a1a1a',
+                                    color: '#00ffaa',
+                                    fontFamily: 'inherit',
+                                    fontSize: '16px'
+                                }}
+                            />
+                        </div>
+                        
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                            <button
+                                onClick={onClose}
+                                style={{
+                                    flex: 1,
+                                    padding: '15px',
+                                    border: '2px solid #00aa88',
+                                    borderRadius: '8px',
+                                    background: 'transparent',
+                                    color: '#00aa88',
+                                    fontFamily: 'inherit',
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => { onSave(inputHost); onClose(); }}
+                                style={{
+                                    flex: 1,
+                                    padding: '15px',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    background: '#00ffaa',
+                                    color: '#0a0a0a',
+                                    fontFamily: 'inherit',
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        
+        function Toast({ message, type }) {
+            const colors = {
+                success: { bg: 'rgba(0, 255, 170, 0.9)', text: '#0a0a0a' },
+                error: { bg: 'rgba(255, 68, 68, 0.9)', text: 'white' },
+                info: { bg: 'rgba(0, 170, 255, 0.9)', text: 'white' }
+            };
+            
+            const c = colors[type] || colors.info;
+            
+            return (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '100px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: c.bg,
+                    color: c.text,
+                    padding: '12px 24px',
+                    borderRadius: '25px',
+                    fontWeight: 'bold',
+                    zIndex: 2000,
+                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+                }}>
+                    {message}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // RENDER APP
+        // ============================================================================
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
