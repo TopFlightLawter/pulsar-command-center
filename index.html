@@ -1,968 +1,1077 @@
-// Pulsar Command Center v1.0
-// Real-time tuning interface for Pulsar Rebirth alarm clock
-// Mobile-first design optimized for iPhone
-
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-
-// ============================================================================
-// CONFIGURATION & CONSTANTS
-// ============================================================================
-
-const PULSAR_HOST = '192.168.0.139';  // YOUR ESP32 IP - FIXED!
-const WS_URL = `ws://${PULSAR_HOST}:81`;
-
-const DEFAULT_CONFIG = {
-  // PWM Warning
-  PWM_WARNING_DURATION: 6000,
-  PWM_WARNING_STEPS: 31,
-  WARNING_PAUSE_DURATION: 3000,
-  
-  // Progressive Pattern
-  MAIN_STARTING_INTENSITY: 8,
-  MAIN_INTENSITY_INCREMENT: 2,
-  MAIN_MAX_INTENSITY: 100,
-  MAIN_FIRES_PER_INTENSITY: 1,
-  
-  // Motor Pattern (v4.0)
-  MOTOR_PATTERN: [100, 100, 100, 100, 200, 200, 200, 200, 300, 300, 300, 300, 400, 400, 400, 400, 300, 300, 300, 300, 200, 200, 200, 150, 150, 100, 100, 100, 1000, 2000, 3000],
-  MOTOR2_OFFSET_MS: 37,
-  
-  // Snooze
-  SNOOZE_DURATION: 60000,
-  
-  // Alarm Window
-  ALARM_START_HOUR: 21,
-  ALARM_START_MINUTE: 30,
-  ALARM_END_HOUR: 23,
-  ALARM_END_MINUTE: 0,
-  ALARM_INTERVAL_MINUTES: 4,
-  
-  // PWM Warning Steps Array
-  PWM_STEPS_ARRAY: [0, 5, 7, 0, 5, 6, 0, 5, 7, 0, 5, 6, 0, 5, 7, 0, 5, 6, 0, 5, 7, 0, 5, 7, 0, 7, 0, 7, 0, 7, 0],
-};
-
-const PARAM_CONFIG = {
-  PWM_WARNING_DURATION: { min: 1000, max: 15000, step: 100, unit: 'ms', label: 'Duration' },
-  PWM_WARNING_STEPS: { min: 10, max: 50, step: 1, unit: '', label: 'Steps' },
-  WARNING_PAUSE_DURATION: { min: 1000, max: 10000, step: 100, unit: 'ms', label: 'Pause Duration' },
-  MAIN_STARTING_INTENSITY: { min: 1, max: 30, step: 1, unit: '%', label: 'Starting Intensity' },
-  MAIN_INTENSITY_INCREMENT: { min: 1, max: 10, step: 1, unit: '%', label: 'Increment' },
-  MAIN_MAX_INTENSITY: { min: 50, max: 100, step: 1, unit: '%', label: 'Max Intensity' },
-  MAIN_FIRES_PER_INTENSITY: { min: 1, max: 15, step: 1, unit: '', label: 'Fires Per Intensity' },
-  MOTOR2_OFFSET_MS: { min: 0, max: 2000, step: 1, unit: 'ms', label: 'Motor 2 Offset' },
-  SNOOZE_DURATION: { min: 30000, max: 600000, step: 1000, unit: 'ms', label: 'Snooze Duration' },
-  ALARM_START_HOUR: { min: 0, max: 23, step: 1, unit: '', label: 'Start Hour' },
-  ALARM_START_MINUTE: { min: 0, max: 59, step: 1, unit: '', label: 'Start Minute' },
-  ALARM_END_HOUR: { min: 0, max: 23, step: 1, unit: '', label: 'End Hour' },
-  ALARM_END_MINUTE: { min: 0, max: 59, step: 1, unit: '', label: 'End Minute' },
-  ALARM_INTERVAL_MINUTES: { min: 1, max: 30, step: 1, unit: 'min', label: 'Interval' },
-};
-
-// ============================================================================
-// WEBSOCKET HOOK (with simulation fallback)
-// ============================================================================
-
-const useWebSocket = (url) => {
-  const [connected, setConnected] = useState(false);
-  const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [alarmArmed, setAlarmArmed] = useState(true);
-  const [motorState, setMotorState] = useState({ m1: false, m2: false, intensity: 0 });
-  const wsRef = useRef(null);
-  const simulationMode = useRef(false);
-  const reconnectTimeout = useRef(null);
-
-  useEffect(() => {
-    const connectWebSocket = () => {
-      try {
-        console.log(`🔌 Connecting to ${url}...`);
-        wsRef.current = new WebSocket(url);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Pulsar Command Center</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
         
-        wsRef.current.onopen = () => {
-          simulationMode.current = false;
-          setConnected(true);
-          console.log('✅ Connected to Pulsar!');
-          wsRef.current.send(JSON.stringify({ type: 'getConfig' }));
-        };
-
-        wsRef.current.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          handleMessage(data);
-        };
-
-        wsRef.current.onerror = (error) => {
-          console.error('❌ WebSocket error:', error);
-        };
-
-        wsRef.current.onclose = () => {
-          console.log('📡 Disconnected from Pulsar');
-          setConnected(false);
-          
-          // Auto-reconnect after 3 seconds
-          reconnectTimeout.current = setTimeout(() => {
-            console.log('🔄 Attempting to reconnect...');
-            connectWebSocket();
-          }, 3000);
-        };
-
-      } catch (e) {
-        console.error('❌ Connection failed:', e);
-        setConnected(false);
-      }
-    };
-
-    connectWebSocket();
-
-    return () => {
-      if (reconnectTimeout.current) {
-        clearTimeout(reconnectTimeout.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, [url]);
-
-  const handleMessage = (data) => {
-    switch (data.type) {
-      case 'configAll':
-        setConfig(prev => ({ ...prev, ...data.config }));
-        console.log('📥 Received config:', data.config);
-        break;
-      case 'configSaved':
-        console.log(`✅ Saved: ${data.param} = ${data.value}`);
-        break;
-      case 'alarm':
-        setAlarmArmed(data.armed);
-        break;
-      case 'motor':
-        setMotorState({ m1: data.m1, m2: data.m2, intensity: data.intensity });
-        break;
-    }
-  };
-
-  const sendMessage = useCallback((message) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-      console.log('📤 Sent:', message);
-    } else {
-      console.warn('⚠️ WebSocket not connected, message not sent:', message);
-    }
-  }, []);
-
-  return { connected, config, alarmArmed, motorState, sendMessage, setConfig, setAlarmArmed };
-};
-
-// ============================================================================
-// NUMBER PICKER COMPONENT
-// ============================================================================
-
-const NumberPicker = ({ value, onChange, config, label, onClose }) => {
-  const [currentValue, setCurrentValue] = useState(value);
-  const [editMode, setEditMode] = useState(false);
-  const [editText, setEditText] = useState(String(value));
-  const scrollRef = useRef(null);
-  const { min, max, step, unit } = config;
-
-  // Generate values array
-  const values = [];
-  for (let v = min; v <= max; v += step) {
-    values.push(v);
-  }
-
-  // Find initial index
-  const getIndex = (val) => {
-    const idx = values.findIndex(v => v >= val);
-    return idx === -1 ? values.length - 1 : idx;
-  };
-
-  const [selectedIndex, setSelectedIndex] = useState(getIndex(value));
-
-  useEffect(() => {
-    setCurrentValue(values[selectedIndex] || min);
-  }, [selectedIndex]);
-
-  const handleScroll = (e) => {
-    const container = e.target;
-    const itemHeight = 48;
-    const scrollTop = container.scrollTop;
-    const newIndex = Math.round(scrollTop / itemHeight);
-    setSelectedIndex(Math.max(0, Math.min(values.length - 1, newIndex)));
-  };
-
-  const handleConfirm = () => {
-    if (editMode) {
-      const parsed = parseInt(editText, 10);
-      if (!isNaN(parsed) && parsed >= min && parsed <= max) {
-        onChange(parsed);
-      }
-    } else {
-      onChange(currentValue);
-    }
-    onClose();
-  };
-
-  const handleEditConfirm = () => {
-    const parsed = parseInt(editText, 10);
-    if (!isNaN(parsed) && parsed >= min && parsed <= max) {
-      setCurrentValue(parsed);
-      setSelectedIndex(getIndex(parsed));
-    }
-    setEditMode(false);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 animate-fadeIn">
-      <div className="bg-gray-900 border-2 border-cyan-500 rounded-2xl p-6 w-80 shadow-2xl shadow-cyan-500/20">
-        <h3 className="text-cyan-400 text-center text-lg font-semibold mb-4">{label}</h3>
+        body {
+            font-family: 'SF Mono', 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ffaa;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
         
-        {editMode ? (
-          <div className="mb-6">
-            <input
-              type="number"
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              className="w-full bg-gray-800 border-2 border-cyan-500 rounded-lg p-4 text-3xl text-center text-white font-mono focus:outline-none focus:border-cyan-300"
-              autoFocus
-              min={min}
-              max={max}
-            />
-            <p className="text-gray-500 text-sm text-center mt-2">
-              Range: {min} - {max} {unit}
-            </p>
-            <button
-              onClick={handleEditConfirm}
-              className="w-full mt-4 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg transition-all"
-            >
-              Apply
-            </button>
-          </div>
-        ) : (
-          <div className="relative h-48 mb-4 overflow-hidden">
-            {/* Gradient overlays */}
-            <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-gray-900 to-transparent z-10 pointer-events-none" />
-            <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-gray-900 to-transparent z-10 pointer-events-none" />
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #00aa88;
+            border-radius: 4px;
+        }
+        
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 170, 0.3); }
+            50% { box-shadow: 0 0 20px rgba(0, 255, 170, 0.6); }
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .connecting {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        .motor-active {
+            animation: glow 0.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+        
+        // ============================================================================
+        // CONFIGURATION
+        // ============================================================================
+        const DEFAULT_HOST = '192.168.0.139';  // FIXED: YOUR ESP32 IP ADDRESS
+        const WS_PORT = 81;
+        
+        // ============================================================================
+        // MAIN APP COMPONENT
+        // ============================================================================
+        function App() {
+            const [connectionStatus, setConnectionStatus] = useState('disconnected');
+            const [currentTime, setCurrentTime] = useState('--:-- --');
+            const [currentDate, setCurrentDate] = useState('--/--');
+            const [motorState, setMotorState] = useState({ m1: false, m2: false, intensity: 0 });
+            const [alarmState, setAlarmState] = useState({ armed: false, nextAlarm: '--:-- --', remaining: '--' });
+            const [config, setConfig] = useState({});
+            const [activeTab, setActiveTab] = useState('control');
+            const [wsHost, setWsHost] = useState(localStorage.getItem('pulsarHost') || DEFAULT_HOST);
+            const [showSettings, setShowSettings] = useState(false);
+            const [toast, setToast] = useState(null);
             
-            {/* Selection highlight */}
-            <div className="absolute top-1/2 left-0 right-0 h-12 -translate-y-1/2 border-t-2 border-b-2 border-cyan-500 bg-cyan-500/10 pointer-events-none z-5" />
+            const wsRef = useRef(null);
+            const reconnectTimerRef = useRef(null);
             
-            {/* Scrollable values */}
-            <div
-              ref={scrollRef}
-              onScroll={handleScroll}
-              className="h-full overflow-y-auto scrollbar-hide snap-y snap-mandatory"
-              style={{ scrollSnapType: 'y mandatory' }}
-            >
-              <div className="h-16" /> {/* Spacer */}
-              {values.map((v, i) => (
-                <div
-                  key={v}
-                  className={`h-12 flex items-center justify-center text-3xl font-mono snap-center transition-all ${
-                    i === selectedIndex 
-                      ? 'text-cyan-400 scale-110' 
-                      : 'text-gray-600 scale-90'
-                  }`}
-                >
-                  {v}{unit && <span className="text-lg ml-1">{unit}</span>}
+            // Show toast notification
+            const showToast = useCallback((message, type = 'info') => {
+                setToast({ message, type });
+                setTimeout(() => setToast(null), 3000);
+            }, []);
+            
+            // WebSocket connection
+            const connect = useCallback(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) return;
+                
+                setConnectionStatus('connecting');
+                const wsUrl = `ws://${wsHost}:${WS_PORT}`;
+                console.log('Connecting to:', wsUrl);
+                
+                try {
+                    wsRef.current = new WebSocket(wsUrl);
+                    
+                    wsRef.current.onopen = () => {
+                        console.log('WebSocket connected');
+                        setConnectionStatus('connected');
+                        showToast('Connected to Pulsar!', 'success');
+                        
+                        // Request current config
+                        wsRef.current.send(JSON.stringify({ type: 'getConfig' }));
+                        
+                        if (reconnectTimerRef.current) {
+                            clearInterval(reconnectTimerRef.current);
+                            reconnectTimerRef.current = null;
+                        }
+                    };
+                    
+                    wsRef.current.onclose = () => {
+                        console.log('WebSocket disconnected');
+                        setConnectionStatus('disconnected');
+                        scheduleReconnect();
+                    };
+                    
+                    wsRef.current.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        setConnectionStatus('disconnected');
+                    };
+                    
+                    wsRef.current.onmessage = (event) => {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            handleMessage(msg);
+                        } catch (e) {
+                            console.error('Parse error:', e);
+                        }
+                    };
+                } catch (e) {
+                    console.error('Connection failed:', e);
+                    setConnectionStatus('disconnected');
+                    scheduleReconnect();
+                }
+            }, [wsHost, showToast]);
+            
+            const scheduleReconnect = useCallback(() => {
+                if (!reconnectTimerRef.current) {
+                    reconnectTimerRef.current = setInterval(() => {
+                        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+                            connect();
+                        }
+                    }, 5000);
+                }
+            }, [connect]);
+            
+            const handleMessage = useCallback((msg) => {
+                switch (msg.type) {
+                    case 'time':
+                        setCurrentTime(msg.value || msg.time);
+                        if (msg.date) setCurrentDate(msg.date);
+                        break;
+                    case 'motor':
+                        setMotorState({ m1: msg.m1, m2: msg.m2, intensity: msg.intensity || 0 });
+                        break;
+                    case 'alarm':
+                        setAlarmState({
+                            armed: msg.armed,
+                            nextAlarm: msg.time || msg.nextAlarm || '--:-- --',
+                            remaining: msg.remaining || '--'
+                        });
+                        break;
+                    case 'configAll':
+                        setConfig(msg.config || {});
+                        break;
+                    case 'configSaved':
+                        setConfig(prev => ({ ...prev, [msg.param]: msg.value }));
+                        break;
+                    case 'flashSaved':
+                        showToast('Configuration saved to flash!', 'success');
+                        break;
+                    case 'ack':
+                        console.log('ACK:', msg.message);
+                        break;
+                    case 'error':
+                        showToast(msg.message, 'error');
+                        break;
+                }
+            }, [showToast]);
+            
+            // Send command to ESP32
+            const send = useCallback((obj) => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify(obj));
+                } else {
+                    showToast('Not connected to Pulsar', 'error');
+                }
+            }, [showToast]);
+            
+            // Connect on mount
+            useEffect(() => {
+                connect();
+                return () => {
+                    if (wsRef.current) wsRef.current.close();
+                    if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
+                };
+            }, [connect]);
+            
+            // Save host to localStorage
+            const saveHost = (newHost) => {
+                setWsHost(newHost);
+                localStorage.setItem('pulsarHost', newHost);
+                if (wsRef.current) wsRef.current.close();
+                setTimeout(connect, 500);
+            };
+            
+            return (
+                <div style={{ padding: '15px', paddingBottom: '120px' }}>
+                    <Header 
+                        connectionStatus={connectionStatus}
+                        onSettingsClick={() => setShowSettings(true)}
+                        onReconnect={connect}
+                    />
+                    
+                    <TimeDisplay time={currentTime} date={currentDate} />
+                    
+                    <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
+                    
+                    {activeTab === 'control' && (
+                        <ControlTab 
+                            alarmState={alarmState}
+                            motorState={motorState}
+                            onToggleArmed={() => send({ type: 'setAlarmArmed', armed: !alarmState.armed })}
+                            onStopAll={() => send({ type: 'stopAll' })}
+                            onTest={(pattern) => send({ type: 'testPattern', pattern })}
+                        />
+                    )}
+                    
+                    {activeTab === 'pwm' && (
+                        <PWMTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    {activeTab === 'pattern' && (
+                        <PatternTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    {activeTab === 'alarm' && (
+                        <AlarmTab config={config} onConfigChange={(param, value) => {
+                            setConfig(prev => ({ ...prev, [param]: value }));
+                            send({ type: 'setConfig', param, value });
+                        }} />
+                    )}
+                    
+                    <BottomBar 
+                        onRefresh={() => send({ type: 'getConfig' })}
+                        onSave={() => send({ type: 'saveToFlash' })}
+                    />
+                    
+                    {showSettings && (
+                        <SettingsModal 
+                            host={wsHost}
+                            onSave={saveHost}
+                            onClose={() => setShowSettings(false)}
+                        />
+                    )}
+                    
+                    {toast && <Toast message={toast.message} type={toast.type} />}
                 </div>
-              ))}
-              <div className="h-16" /> {/* Spacer */}
-            </div>
-          </div>
-        )}
-
-        <div className="flex gap-3">
-          {!editMode && (
-            <button
-              onClick={() => {
-                setEditText(String(currentValue));
-                setEditMode(true);
-              }}
-              className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-lg transition-all"
-            >
-              Edit
-            </button>
-          )}
-          <button
-            onClick={handleConfirm}
-            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg transition-all shadow-lg shadow-cyan-500/30"
-          >
-            OK
-          </button>
-        </div>
+            );
+        }
         
-        <button
-          onClick={onClose}
-          className="w-full mt-3 text-gray-500 hover:text-gray-300 py-2 transition-all"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// TIME PICKER COMPONENT
-// ============================================================================
-
-const TimePicker = ({ hour, minute, onChange, onClose, label }) => {
-  const [selectedHour, setSelectedHour] = useState(hour);
-  const [selectedMinute, setSelectedMinute] = useState(minute);
-  const [editMode, setEditMode] = useState(null); // 'hour' or 'minute'
-
-  const hours = Array.from({ length: 12 }, (_, i) => i + 1);
-  const minutes = Array.from({ length: 60 }, (_, i) => i);
-  const [isPM, setIsPM] = useState(hour >= 12);
-
-  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-
-  useEffect(() => {
-    setSelectedHour(displayHour);
-  }, [hour]);
-
-  const handleConfirm = () => {
-    let h = selectedHour;
-    if (isPM && h !== 12) h += 12;
-    if (!isPM && h === 12) h = 0;
-    onChange(h, selectedMinute);
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 animate-fadeIn">
-      <div className="bg-gray-900 border-2 border-cyan-500 rounded-2xl p-6 w-80 shadow-2xl shadow-cyan-500/20">
-        <h3 className="text-cyan-400 text-center text-lg font-semibold mb-6">{label}</h3>
+        // ============================================================================
+        // HEADER COMPONENT
+        // ============================================================================
+        function Header({ connectionStatus, onSettingsClick, onReconnect }) {
+            const statusColors = {
+                connected: { bg: 'rgba(0, 255, 170, 0.2)', border: '#00ffaa', text: '#00ffaa' },
+                connecting: { bg: 'rgba(255, 170, 0, 0.2)', border: '#ffaa00', text: '#ffaa00' },
+                disconnected: { bg: 'rgba(255, 68, 68, 0.2)', border: '#ff4444', text: '#ff4444' }
+            };
+            
+            const colors = statusColors[connectionStatus];
+            
+            return (
+                <div style={{
+                    textAlign: 'center',
+                    padding: '20px 0',
+                    borderBottom: '2px solid #00ffaa',
+                    marginBottom: '20px'
+                }}>
+                    <div style={{
+                        fontSize: '24px',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 10px #00ffaa',
+                        letterSpacing: '2px'
+                    }}>
+                        ⚡ PULSAR COMMAND CENTER ⚡
+                    </div>
+                    
+                    <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'center', gap: '10px' }}>
+                        <button
+                            onClick={connectionStatus === 'disconnected' ? onReconnect : undefined}
+                            className={connectionStatus === 'connecting' ? 'connecting' : ''}
+                            style={{
+                                padding: '8px 20px',
+                                borderRadius: '20px',
+                                border: `2px solid ${colors.border}`,
+                                background: colors.bg,
+                                color: colors.text,
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                fontFamily: 'inherit',
+                                cursor: connectionStatus === 'disconnected' ? 'pointer' : 'default'
+                            }}
+                        >
+                            {connectionStatus.toUpperCase()}
+                        </button>
+                        
+                        <button
+                            onClick={onSettingsClick}
+                            style={{
+                                width: '36px',
+                                height: '36px',
+                                borderRadius: '50%',
+                                border: '2px solid #00aa88',
+                                background: 'transparent',
+                                color: '#00aa88',
+                                fontSize: '18px',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            ⚙
+                        </button>
+                    </div>
+                </div>
+            );
+        }
         
-        <div className="flex items-center justify-center gap-2 mb-6">
-          {/* Hour */}
-          <button
-            onClick={() => setEditMode('hour')}
-            className="bg-gray-800 border-2 border-cyan-500/50 hover:border-cyan-400 rounded-xl p-4 transition-all"
-          >
-            <span className="text-4xl font-mono text-white">
-              {String(selectedHour).padStart(2, '0')}
-            </span>
-          </button>
-          
-          <span className="text-4xl text-cyan-400">:</span>
-          
-          {/* Minute */}
-          <button
-            onClick={() => setEditMode('minute')}
-            className="bg-gray-800 border-2 border-cyan-500/50 hover:border-cyan-400 rounded-xl p-4 transition-all"
-          >
-            <span className="text-4xl font-mono text-white">
-              {String(selectedMinute).padStart(2, '0')}
-            </span>
-          </button>
-          
-          {/* AM/PM Toggle */}
-          <div className="flex flex-col gap-1 ml-2">
-            <button
-              onClick={() => setIsPM(false)}
-              className={`px-3 py-1 rounded text-sm font-bold transition-all ${
-                !isPM ? 'bg-cyan-500 text-black' : 'bg-gray-700 text-gray-400'
-              }`}
-            >
-              AM
-            </button>
-            <button
-              onClick={() => setIsPM(true)}
-              className={`px-3 py-1 rounded text-sm font-bold transition-all ${
-                isPM ? 'bg-cyan-500 text-black' : 'bg-gray-700 text-gray-400'
-              }`}
-            >
-              PM
-            </button>
-          </div>
-        </div>
-
-        {/* Hour/Minute selector */}
-        {editMode && (
-          <div className="mb-4 p-4 bg-gray-800 rounded-xl">
-            <p className="text-gray-400 text-sm mb-2 text-center">
-              Select {editMode}
-            </p>
-            <div className="grid grid-cols-6 gap-2 max-h-40 overflow-y-auto">
-              {(editMode === 'hour' ? hours : minutes).map((val) => (
+        // ============================================================================
+        // TIME DISPLAY
+        // ============================================================================
+        function TimeDisplay({ time, date }) {
+            return (
+                <div style={{ textAlign: 'center', margin: '20px 0' }}>
+                    <div style={{
+                        fontSize: '48px',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 20px #00ffaa'
+                    }}>
+                        {time}
+                    </div>
+                    <div style={{ fontSize: '18px', color: '#00cc88', marginTop: '5px' }}>
+                        {date}
+                    </div>
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // TAB BAR
+        // ============================================================================
+        function TabBar({ activeTab, onTabChange }) {
+            const tabs = [
+                { id: 'control', label: 'CONTROL' },
+                { id: 'pwm', label: 'PWM' },
+                { id: 'pattern', label: 'PATTERN' },
+                { id: 'alarm', label: 'ALARM' }
+            ];
+            
+            return (
+                <div style={{
+                    display: 'flex',
+                    gap: '5px',
+                    marginBottom: '20px',
+                    overflowX: 'auto',
+                    paddingBottom: '5px'
+                }}>
+                    {tabs.map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => onTabChange(tab.id)}
+                            style={{
+                                padding: '12px 20px',
+                                border: `2px solid ${activeTab === tab.id ? '#00ffaa' : '#00aa88'}`,
+                                borderRadius: '8px',
+                                background: activeTab === tab.id ? '#00ffaa' : 'transparent',
+                                color: activeTab === tab.id ? '#0a0a0a' : '#00aa88',
+                                fontFamily: 'inherit',
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap',
+                                transition: 'all 0.2s'
+                            }}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // PANEL COMPONENT
+        // ============================================================================
+        function Panel({ title, children }) {
+            return (
+                <div style={{
+                    background: 'rgba(0, 255, 170, 0.05)',
+                    border: '2px solid #00ffaa',
+                    borderRadius: '12px',
+                    padding: '20px',
+                    marginBottom: '20px'
+                }}>
+                    <div style={{
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                        color: '#00ddaa',
+                        marginBottom: '15px',
+                        paddingBottom: '10px',
+                        borderBottom: '1px solid #00aa88'
+                    }}>
+                        {title}
+                    </div>
+                    {children}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // CONTROL TAB
+        // ============================================================================
+        function ControlTab({ alarmState, motorState, onToggleArmed, onStopAll, onTest }) {
+            return (
+                <>
+                    <Panel title="🎯 ALARM STATUS">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                            <span>System Armed</span>
+                            <ToggleButton active={alarmState.armed} onClick={onToggleArmed} />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>Next Alarm</span>
+                            <span style={{ fontSize: '24px', fontWeight: 'bold' }}>{alarmState.nextAlarm}</span>
+                        </div>
+                        {alarmState.remaining !== '--' && (
+                            <div style={{ textAlign: 'center', marginTop: '10px', color: '#00aa88' }}>
+                                Time remaining: {alarmState.remaining}
+                            </div>
+                        )}
+                    </Panel>
+                    
+                    <Panel title="🔥 MOTOR STATUS">
+                        <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', margin: '15px 0' }}>
+                            <MotorIndicator label="M1" active={motorState.m1} />
+                            <MotorIndicator label="M2" active={motorState.m2} />
+                        </div>
+                        <IntensityBar intensity={motorState.intensity} />
+                    </Panel>
+                    
+                    <Panel title="🚨 QUICK ACTIONS">
+                        <ActionButton 
+                            label="🛑 EMERGENCY STOP" 
+                            variant="danger" 
+                            onClick={onStopAll} 
+                        />
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '10px' }}>
+                            <ActionButton 
+                                label="⚡ PWM TEST" 
+                                variant="warning" 
+                                onClick={() => onTest('pwmWarning')} 
+                            />
+                            <ActionButton 
+                                label="🔥 PATTERN" 
+                                variant="warning" 
+                                onClick={() => onTest('progressive')} 
+                            />
+                        </div>
+                    </Panel>
+                </>
+            );
+        }
+        
+        // ============================================================================
+        // PWM TAB
+        // ============================================================================
+        function PWMTab({ config, onConfigChange }) {
+            return (
+                <Panel title="⚡ PWM WARNING SETTINGS">
+                    <ParamControl
+                        label="Warning Duration"
+                        value={config.PWM_WARNING_DURATION || 6000}
+                        unit="ms"
+                        step={500}
+                        min={1000}
+                        max={15000}
+                        onChange={(v) => onConfigChange('PWM_WARNING_DURATION', v)}
+                    />
+                    <ParamControl
+                        label="Pause After Warning"
+                        value={config.WARNING_PAUSE_DURATION || 3000}
+                        unit="ms"
+                        step={500}
+                        min={1000}
+                        max={10000}
+                        onChange={(v) => onConfigChange('WARNING_PAUSE_DURATION', v)}
+                    />
+                </Panel>
+            );
+        }
+        
+        // ============================================================================
+        // PATTERN TAB
+        // ============================================================================
+        function PatternTab({ config, onConfigChange }) {
+            return (
+                <Panel title="🔥 PROGRESSIVE PATTERN">
+                    <ParamControl
+                        label="Starting Intensity"
+                        value={config.MAIN_STARTING_INTENSITY || 8}
+                        unit="%"
+                        step={1}
+                        min={1}
+                        max={30}
+                        onChange={(v) => onConfigChange('MAIN_STARTING_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Intensity Increment"
+                        value={config.MAIN_INTENSITY_INCREMENT || 2}
+                        unit="%"
+                        step={1}
+                        min={1}
+                        max={10}
+                        onChange={(v) => onConfigChange('MAIN_INTENSITY_INCREMENT', v)}
+                    />
+                    <ParamControl
+                        label="Max Intensity"
+                        value={config.MAIN_MAX_INTENSITY || 100}
+                        unit="%"
+                        step={5}
+                        min={50}
+                        max={100}
+                        onChange={(v) => onConfigChange('MAIN_MAX_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Fires Per Intensity"
+                        value={config.MAIN_FIRES_PER_INTENSITY || 1}
+                        unit=""
+                        step={1}
+                        min={1}
+                        max={15}
+                        onChange={(v) => onConfigChange('MAIN_FIRES_PER_INTENSITY', v)}
+                    />
+                    <ParamControl
+                        label="Motor 2 Offset"
+                        value={config.MOTOR2_OFFSET_MS || 37}
+                        unit="ms"
+                        step={10}
+                        min={0}
+                        max={2000}
+                        onChange={(v) => onConfigChange('MOTOR2_OFFSET_MS', v)}
+                    />
+                </Panel>
+            );
+        }
+        
+        // ============================================================================
+        // ALARM TAB
+        // ============================================================================
+        function AlarmTab({ config, onConfigChange }) {
+            return (
+                <>
+                    <Panel title="⏰ ALARM WINDOW START">
+                        <TimePicker
+                            hour={config.ALARM_START_HOUR ?? 21}
+                            minute={config.ALARM_START_MINUTE ?? 30}
+                            onHourChange={(h) => onConfigChange('ALARM_START_HOUR', h)}
+                            onMinuteChange={(m) => onConfigChange('ALARM_START_MINUTE', m)}
+                        />
+                    </Panel>
+                    
+                    <Panel title="⏰ ALARM WINDOW END">
+                        <TimePicker
+                            hour={config.ALARM_END_HOUR ?? 23}
+                            minute={config.ALARM_END_MINUTE ?? 0}
+                            onHourChange={(h) => onConfigChange('ALARM_END_HOUR', h)}
+                            onMinuteChange={(m) => onConfigChange('ALARM_END_MINUTE', m)}
+                        />
+                    </Panel>
+                    
+                    <Panel title="🔔 ALARM SETTINGS">
+                        <ParamControl
+                            label="Minutes Between Alarms"
+                            value={config.ALARM_INTERVAL_MINUTES || 4}
+                            unit="min"
+                            step={1}
+                            min={1}
+                            max={30}
+                            onChange={(v) => onConfigChange('ALARM_INTERVAL_MINUTES', v)}
+                        />
+                        <ParamControl
+                            label="Snooze Duration"
+                            value={(config.SNOOZE_DURATION || 60000) / 1000}
+                            unit="sec"
+                            step={10}
+                            min={30}
+                            max={600}
+                            onChange={(v) => onConfigChange('SNOOZE_DURATION', v * 1000)}
+                        />
+                    </Panel>
+                </>
+            );
+        }
+        
+        // ============================================================================
+        // UI COMPONENTS
+        // ============================================================================
+        function ToggleButton({ active, onClick }) {
+            return (
                 <button
-                  key={val}
-                  onClick={() => {
-                    if (editMode === 'hour') setSelectedHour(val);
-                    else setSelectedMinute(val);
-                    setEditMode(null);
-                  }}
-                  className={`p-2 rounded font-mono text-sm transition-all ${
-                    (editMode === 'hour' ? selectedHour : selectedMinute) === val
-                      ? 'bg-cyan-500 text-black'
-                      : 'bg-gray-700 hover:bg-gray-600 text-white'
-                  }`}
+                    onClick={onClick}
+                    style={{
+                        width: '70px',
+                        height: '36px',
+                        borderRadius: '18px',
+                        border: '2px solid #00ffaa',
+                        background: active ? '#00ffaa' : 'transparent',
+                        position: 'relative',
+                        cursor: 'pointer',
+                        transition: 'all 0.3s'
+                    }}
                 >
-                  {String(val).padStart(2, '0')}
+                    <div style={{
+                        position: 'absolute',
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: active ? '#0a0a0a' : '#00ffaa',
+                        top: '2px',
+                        left: active ? '36px' : '2px',
+                        transition: 'all 0.3s'
+                    }} />
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-lg transition-all"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleConfirm}
-            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg transition-all shadow-lg shadow-cyan-500/30"
-          >
-            OK
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// ARRAY INPUT COMPONENT (for PWM steps and Motor Pattern)
-// ============================================================================
-
-const ArrayInput = ({ values, onChange, onClose, label, maxItems }) => {
-  const [text, setText] = useState(values.join(', '));
-  const [error, setError] = useState('');
-
-  const parseValues = (input) => {
-    const nums = input.split(',')
-      .map(s => s.trim())
-      .filter(s => s !== '')
-      .map(s => parseInt(s, 10));
-    return nums;
-  };
-
-  const validate = (nums) => {
-    if (nums.some(isNaN)) return 'Invalid number detected';
-    if (nums.length > maxItems) return `Maximum ${maxItems} values allowed`;
-    if (nums.length === 0) return 'At least one value required';
-    return '';
-  };
-
-  const handleConfirm = () => {
-    const nums = parseValues(text);
-    const err = validate(nums);
-    if (err) {
-      setError(err);
-      return;
-    }
-    onChange(nums);
-    onClose();
-  };
-
-  const currentCount = parseValues(text).length;
-
-  return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 animate-fadeIn p-4">
-      <div className="bg-gray-900 border-2 border-cyan-500 rounded-2xl p-6 w-full max-w-md shadow-2xl shadow-cyan-500/20">
-        <h3 className="text-cyan-400 text-center text-lg font-semibold mb-2">{label}</h3>
-        <p className="text-gray-500 text-sm text-center mb-4">
-          Enter values separated by commas (max {maxItems})
-        </p>
+            );
+        }
         
-        <textarea
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            setError('');
-          }}
-          className="w-full h-32 bg-gray-800 border-2 border-cyan-500/50 focus:border-cyan-400 rounded-lg p-3 text-white font-mono text-sm focus:outline-none resize-none"
-          placeholder="0, 5, 7, 0, 5, 6..."
-        />
+        function MotorIndicator({ label, active }) {
+            return (
+                <div
+                    className={active ? 'motor-active' : ''}
+                    style={{
+                        width: '60px',
+                        height: '60px',
+                        borderRadius: '50%',
+                        border: '3px solid #00ffaa',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 'bold',
+                        fontSize: '18px',
+                        background: active ? '#00ffaa' : 'transparent',
+                        color: active ? '#0a0a0a' : '#00ffaa',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </div>
+            );
+        }
         
-        <div className="flex justify-between items-center mt-2 mb-4">
-          <span className={`text-sm ${currentCount > maxItems ? 'text-red-400' : 'text-gray-400'}`}>
-            {currentCount} / {maxItems} values
-          </span>
-          {error && <span className="text-red-400 text-sm">{error}</span>}
-        </div>
-
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-lg transition-all"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleConfirm}
-            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg transition-all shadow-lg shadow-cyan-500/30"
-          >
-            OK
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// PARAMETER ROW COMPONENT
-// ============================================================================
-
-const ParamRow = ({ paramKey, value, config, onChange }) => {
-  const [showPicker, setShowPicker] = useState(false);
-  const { unit, label } = config;
-
-  return (
-    <>
-      <button
-        onClick={() => setShowPicker(true)}
-        className="w-full flex justify-between items-center py-3 px-4 bg-gray-800/50 hover:bg-gray-800 rounded-lg transition-all group"
-      >
-        <span className="text-gray-300 group-hover:text-white transition-all">{label}</span>
-        <span className="text-cyan-400 font-mono text-lg group-hover:text-cyan-300 transition-all">
-          [{value}]{unit && <span className="text-sm ml-1 text-cyan-600">{unit}</span>}
-        </span>
-      </button>
-      
-      {showPicker && (
-        <NumberPicker
-          value={value}
-          config={config}
-          label={label}
-          onChange={(v) => onChange(paramKey, v)}
-          onClose={() => setShowPicker(false)}
-        />
-      )}
-    </>
-  );
-};
-
-// ============================================================================
-// SECTION COMPONENT
-// ============================================================================
-
-const Section = ({ title, icon, children }) => (
-  <div className="bg-gray-900/80 border border-cyan-500/30 rounded-xl p-4 mb-4 backdrop-blur">
-    <h3 className="text-cyan-400 font-semibold mb-3 flex items-center gap-2">
-      <span>{icon}</span>
-      {title}
-    </h3>
-    <div className="space-y-2">
-      {children}
-    </div>
-  </div>
-);
-
-// ============================================================================
-// MAIN APP COMPONENT
-// ============================================================================
-
-export default function PulsarCommandCenter() {
-  const { connected, config, alarmArmed, motorState, sendMessage, setConfig, setAlarmArmed } = useWebSocket(WS_URL);
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [showAlarmPicker, setShowAlarmPicker] = useState(false);
-  const [showPwmArray, setShowPwmArray] = useState(false);
-  const [showMotorPattern, setShowMotorPattern] = useState(false);
-  const [saveStatus, setSaveStatus] = useState('');
-
-  // Update time every second
-  useEffect(() => {
-    const interval = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Format time for display
-  const formatTime = (date) => {
-    let hours = date.getHours();
-    const minutes = date.getMinutes();
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return {
-      time: `${hours}:${String(minutes).padStart(2, '0')}`,
-      ampm
-    };
-  };
-
-  const formatAlarmTime = (hour, minute) => {
-    const h = hour % 12 || 12;
-    const ampm = hour >= 12 ? 'PM' : 'AM';
-    return `${h}:${String(minute).padStart(2, '0')} ${ampm}`;
-  };
-
-  const { time, ampm } = formatTime(currentTime);
-
-  const handleParamChange = (param, value) => {
-    setConfig(prev => ({ ...prev, [param]: value }));
-    sendMessage({ type: 'setConfig', param, value });
-  };
-
-  const handleAlarmTimeChange = (hour, minute) => {
-    setConfig(prev => ({ ...prev, ALARM_START_HOUR: hour, ALARM_START_MINUTE: minute }));
-    sendMessage({ type: 'setConfig', param: 'ALARM_START_HOUR', value: hour });
-    sendMessage({ type: 'setConfig', param: 'ALARM_START_MINUTE', value: minute });
-  };
-
-  const handleToggleArmed = () => {
-    const newState = !alarmArmed;
-    setAlarmArmed(newState);
-    sendMessage({ type: 'setAlarmArmed', armed: newState });
-  };
-
-  const handleSaveToDevice = () => {
-    sendMessage({ type: 'saveToFlash' });
-    setSaveStatus('Saved!');
-    setTimeout(() => setSaveStatus(''), 2000);
-  };
-
-  const handleTestPattern = (pattern) => {
-    sendMessage({ type: 'testPattern', pattern });
-  };
-
-  const handleStopAll = () => {
-    sendMessage({ type: 'stopAll' });
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-950 text-white overflow-x-hidden">
-      {/* Subtle grid background */}
-      <div 
-        className="fixed inset-0 pointer-events-none opacity-5"
-        style={{
-          backgroundImage: `
-            linear-gradient(90deg, rgba(0,255,170,0.1) 1px, transparent 1px),
-            linear-gradient(rgba(0,255,170,0.1) 1px, transparent 1px)
-          `,
-          backgroundSize: '20px 20px'
-        }}
-      />
-
-      {/* Main content */}
-      <div className="relative z-10 p-6 pb-20 max-w-md mx-auto">
-        
-        {/* Connection status */}
-        <div className="flex justify-center mb-4">
-          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs ${
-            connected ? 'bg-cyan-500/20 text-cyan-400' : 'bg-red-500/20 text-red-400'
-          }`}>
-            <div className={`w-2 h-2 rounded-full ${connected ? 'bg-cyan-400 animate-pulse' : 'bg-red-400'}`} />
-            {connected ? 'Connected to Pulsar' : 'Connecting...'}
-          </div>
-        </div>
-
-        {/* Hero Clock Display */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-baseline">
-            <span 
-              className="text-7xl font-bold tracking-tight"
-              style={{ 
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                textShadow: '0 0 40px rgba(0,255,170,0.4), 0 0 80px rgba(0,255,170,0.2)'
-              }}
-            >
-              {time}
-            </span>
-            <span 
-              className="text-lg font-bold text-cyan-400 ml-2 tracking-wider"
-              style={{ textShadow: '0 0 10px rgba(0,255,170,0.5)' }}
-            >
-              {ampm}
-            </span>
-          </div>
-          <div className="text-gray-500 text-sm mt-1">
-            {currentTime.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="flex items-center gap-4 mb-6">
-          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
-        </div>
-
-        {/* Alarm Display */}
-        <div className="bg-gray-900/80 border border-cyan-500/30 rounded-2xl p-5 mb-6 backdrop-blur">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-gray-400 text-xs uppercase tracking-wider mb-1">⏰ Alarm</div>
-              <button 
-                onClick={() => setShowAlarmPicker(true)}
-                className="text-3xl font-semibold text-white hover:text-cyan-300 transition-all"
-              >
-                {formatAlarmTime(config.ALARM_START_HOUR, config.ALARM_START_MINUTE)}
-              </button>
-            </div>
+        function IntensityBar({ intensity }) {
+            const pct = Math.max(0, Math.min(100, ((intensity - 8) / 92) * 100));
             
-            {/* ARM/DISARM Toggle */}
-            <button
-              onClick={handleToggleArmed}
-              className={`px-5 py-2 rounded-full font-bold text-sm uppercase tracking-wider transition-all ${
-                alarmArmed 
-                  ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/40' 
-                  : 'bg-gray-700 text-gray-400'
-              }`}
-            >
-              {alarmArmed ? '● Armed' : '○ Disarmed'}
-            </button>
-          </div>
-        </div>
-
-        {/* Scroll indicator */}
-        <div className="text-center mb-6 animate-bounce">
-          <span className="text-gray-600 text-sm">Scroll for tuning</span>
-          <div className="text-cyan-500 text-xl">▼</div>
-        </div>
-
-        {/* ========== TUNING SECTIONS ========== */}
-
-        <div className="text-center mb-4">
-          <h2 className="text-cyan-400 text-lg font-semibold uppercase tracking-widest">
-            ⚙️ Tuning Console
-          </h2>
-        </div>
-
-        {/* PWM Warning Section */}
-        <Section title="PWM Warning" icon="⚡">
-          <ParamRow 
-            paramKey="PWM_WARNING_DURATION" 
-            value={config.PWM_WARNING_DURATION} 
-            config={PARAM_CONFIG.PWM_WARNING_DURATION}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="PWM_WARNING_STEPS" 
-            value={config.PWM_WARNING_STEPS} 
-            config={PARAM_CONFIG.PWM_WARNING_STEPS}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="WARNING_PAUSE_DURATION" 
-            value={config.WARNING_PAUSE_DURATION} 
-            config={PARAM_CONFIG.WARNING_PAUSE_DURATION}
-            onChange={handleParamChange}
-          />
-          
-          {/* PWM Steps Array */}
-          <button
-            onClick={() => setShowPwmArray(true)}
-            className="w-full mt-2 py-3 px-4 bg-gray-800/50 hover:bg-gray-800 rounded-lg transition-all text-left"
-          >
-            <div className="text-gray-300 text-sm mb-1">PWM Steps Array</div>
-            <div className="text-cyan-400 font-mono text-xs truncate">
-              [{config.PWM_STEPS_ARRAY?.slice(0, 10).join(', ')}...]
-            </div>
-            <div className="text-gray-500 text-xs mt-1">
-              {config.PWM_STEPS_ARRAY?.length || 0} steps
-            </div>
-          </button>
-        </Section>
-
-        {/* Progressive Pattern Section */}
-        <Section title="Progressive Pattern" icon="🔥">
-          <ParamRow 
-            paramKey="MAIN_STARTING_INTENSITY" 
-            value={config.MAIN_STARTING_INTENSITY} 
-            config={PARAM_CONFIG.MAIN_STARTING_INTENSITY}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="MAIN_INTENSITY_INCREMENT" 
-            value={config.MAIN_INTENSITY_INCREMENT} 
-            config={PARAM_CONFIG.MAIN_INTENSITY_INCREMENT}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="MAIN_MAX_INTENSITY" 
-            value={config.MAIN_MAX_INTENSITY} 
-            config={PARAM_CONFIG.MAIN_MAX_INTENSITY}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="MAIN_FIRES_PER_INTENSITY" 
-            value={config.MAIN_FIRES_PER_INTENSITY} 
-            config={PARAM_CONFIG.MAIN_FIRES_PER_INTENSITY}
-            onChange={handleParamChange}
-          />
-        </Section>
-
-        {/* Motor Pattern Section (v4.0) */}
-        <Section title="Motor Pattern (v4.0)" icon="🎵">
-          <ParamRow 
-            paramKey="MOTOR2_OFFSET_MS" 
-            value={config.MOTOR2_OFFSET_MS} 
-            config={PARAM_CONFIG.MOTOR2_OFFSET_MS}
-            onChange={handleParamChange}
-          />
-          
-          {/* Motor Pattern Array */}
-          <button
-            onClick={() => setShowMotorPattern(true)}
-            className="w-full mt-2 py-3 px-4 bg-gray-800/50 hover:bg-gray-800 rounded-lg transition-all text-left"
-          >
-            <div className="text-gray-300 text-sm mb-1">Motor Pattern Array</div>
-            <div className="text-cyan-400 font-mono text-xs truncate">
-              [{config.MOTOR_PATTERN?.slice(0, 8).join(', ')}...]
-            </div>
-            <div className="text-gray-500 text-xs mt-1">
-              {config.MOTOR_PATTERN?.length || 0} timing values (ON/OFF pairs)
-            </div>
-          </button>
-        </Section>
-
-        {/* Alarm Window Section */}
-        <Section title="Alarm Window" icon="⏰">
-          <ParamRow 
-            paramKey="ALARM_START_HOUR" 
-            value={config.ALARM_START_HOUR} 
-            config={PARAM_CONFIG.ALARM_START_HOUR}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="ALARM_START_MINUTE" 
-            value={config.ALARM_START_MINUTE} 
-            config={PARAM_CONFIG.ALARM_START_MINUTE}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="ALARM_END_HOUR" 
-            value={config.ALARM_END_HOUR} 
-            config={PARAM_CONFIG.ALARM_END_HOUR}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="ALARM_END_MINUTE" 
-            value={config.ALARM_END_MINUTE} 
-            config={PARAM_CONFIG.ALARM_END_MINUTE}
-            onChange={handleParamChange}
-          />
-          <ParamRow 
-            paramKey="ALARM_INTERVAL_MINUTES" 
-            value={config.ALARM_INTERVAL_MINUTES} 
-            config={PARAM_CONFIG.ALARM_INTERVAL_MINUTES}
-            onChange={handleParamChange}
-          />
-        </Section>
-
-        {/* Snooze Section */}
-        <Section title="Snooze" icon="😴">
-          <ParamRow 
-            paramKey="SNOOZE_DURATION" 
-            value={config.SNOOZE_DURATION} 
-            config={PARAM_CONFIG.SNOOZE_DURATION}
-            onChange={handleParamChange}
-          />
-        </Section>
-
-        {/* Action Buttons */}
-        <div className="space-y-3 mt-8">
-          <button
-            onClick={handleSaveToDevice}
-            className="w-full py-4 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-black font-bold rounded-xl transition-all shadow-lg shadow-cyan-500/30 flex items-center justify-center gap-2"
-          >
-            💾 {saveStatus || 'SAVE TO DEVICE'}
-          </button>
-          
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => handleTestPattern('pwmWarning')}
-              className="py-3 bg-gray-800 hover:bg-gray-700 text-cyan-400 font-semibold rounded-xl transition-all border border-cyan-500/30"
-            >
-              ⚡ Test PWM
-            </button>
-            <button
-              onClick={() => handleTestPattern('progressive')}
-              className="py-3 bg-gray-800 hover:bg-gray-700 text-cyan-400 font-semibold rounded-xl transition-all border border-cyan-500/30"
-            >
-              🔥 Test Pattern
-            </button>
-          </div>
-          
-          <button
-            onClick={handleStopAll}
-            className="w-full py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl transition-all"
-          >
-            🛑 EMERGENCY STOP
-          </button>
-        </div>
-
-        {/* Motor State Indicator (shows during tests) */}
-        {(motorState.m1 || motorState.m2) && (
-          <div className="fixed bottom-4 left-4 right-4 bg-cyan-500/20 border border-cyan-500 rounded-xl p-4 backdrop-blur">
-            <div className="flex justify-between items-center">
-              <div className="flex gap-4">
-                <div className={`px-3 py-1 rounded ${motorState.m1 ? 'bg-cyan-500 text-black' : 'bg-gray-700 text-gray-500'}`}>
-                  M1
+            return (
+                <>
+                    <div style={{
+                        height: '30px',
+                        background: '#1a1a1a',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '15px',
+                        overflow: 'hidden',
+                        margin: '15px 0'
+                    }}>
+                        <div style={{
+                            height: '100%',
+                            width: `${pct}%`,
+                            background: 'linear-gradient(90deg, #00aa88, #00ffaa)',
+                            transition: 'width 0.3s',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-end',
+                            paddingRight: '10px',
+                            color: '#0a0a0a',
+                            fontWeight: 'bold',
+                            fontSize: '14px'
+                        }}>
+                            {intensity > 0 ? `${intensity}%` : ''}
+                        </div>
+                    </div>
+                    <div style={{ textAlign: 'center', fontSize: '14px', color: '#00aa88' }}>
+                        {intensity > 0 ? `Intensity: ${intensity}%` : 'Ready'}
+                    </div>
+                </>
+            );
+        }
+        
+        function ActionButton({ label, variant, onClick }) {
+            const variants = {
+                primary: 'linear-gradient(135deg, #00aa88, #00ffaa)',
+                danger: 'linear-gradient(135deg, #cc0000, #ff4444)',
+                warning: 'linear-gradient(135deg, #cc8800, #ffaa00)',
+                secondary: 'transparent'
+            };
+            
+            return (
+                <button
+                    onClick={onClick}
+                    style={{
+                        width: '100%',
+                        padding: '18px',
+                        borderRadius: '12px',
+                        border: variant === 'secondary' ? '2px solid #00ffaa' : 'none',
+                        background: variants[variant],
+                        color: variant === 'secondary' ? '#00ffaa' : (variant === 'danger' ? 'white' : '#0a0a0a'),
+                        fontFamily: 'inherit',
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        textTransform: 'uppercase',
+                        letterSpacing: '1px',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </button>
+            );
+        }
+        
+        function ParamControl({ label, value, unit, step, min, max, onChange }) {
+            const handleChange = (delta) => {
+                const newValue = Math.max(min, Math.min(max, value + delta));
+                onChange(newValue);
+            };
+            
+            return (
+                <div style={{ marginBottom: '20px' }}>
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '8px',
+                        fontSize: '14px'
+                    }}>
+                        <span>{label}</span>
+                        <span style={{ fontWeight: 'bold', color: '#00ffaa' }}>
+                            {value}{unit}
+                        </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <ParamButton label="−" onClick={() => handleChange(-step)} />
+                        <div style={{
+                            flex: 1,
+                            textAlign: 'center',
+                            fontSize: '24px',
+                            fontWeight: 'bold',
+                            padding: '10px',
+                            border: '2px solid #00aa88',
+                            borderRadius: '10px',
+                            background: 'rgba(0, 255, 170, 0.1)'
+                        }}>
+                            {value}
+                        </div>
+                        <ParamButton label="+" onClick={() => handleChange(step)} />
+                    </div>
                 </div>
-                <div className={`px-3 py-1 rounded ${motorState.m2 ? 'bg-cyan-500 text-black' : 'bg-gray-700 text-gray-500'}`}>
-                  M2
+            );
+        }
+        
+        function ParamButton({ label, onClick }) {
+            return (
+                <button
+                    onClick={onClick}
+                    style={{
+                        width: '50px',
+                        height: '50px',
+                        borderRadius: '10px',
+                        border: '2px solid #00ffaa',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '24px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    {label}
+                </button>
+            );
+        }
+        
+        function TimePicker({ hour, minute, onHourChange, onMinuteChange }) {
+            const hour12 = hour % 12 || 12;
+            const isPM = hour >= 12;
+            
+            const adjustHour = (delta) => {
+                let newHour = (hour + delta + 24) % 24;
+                onHourChange(newHour);
+            };
+            
+            const adjustMinute = (delta) => {
+                let newMinute = (minute + delta + 60) % 60;
+                onMinuteChange(newMinute);
+            };
+            
+            const toggleAmPm = () => {
+                onHourChange((hour + 12) % 24);
+            };
+            
+            return (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    margin: '15px 0'
+                }}>
+                    <TimePickerColumn
+                        value={hour12}
+                        label="HOUR"
+                        onUp={() => adjustHour(1)}
+                        onDown={() => adjustHour(-1)}
+                    />
+                    <span style={{ fontSize: '36px' }}>:</span>
+                    <TimePickerColumn
+                        value={String(minute).padStart(2, '0')}
+                        label="MIN"
+                        onUp={() => adjustMinute(5)}
+                        onDown={() => adjustMinute(-5)}
+                    />
+                    <button
+                        onClick={toggleAmPm}
+                        style={{
+                            padding: '10px 15px',
+                            border: '2px solid #00ffaa',
+                            borderRadius: '8px',
+                            background: 'transparent',
+                            color: '#00ffaa',
+                            fontFamily: 'inherit',
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        {isPM ? 'PM' : 'AM'}
+                    </button>
                 </div>
-              </div>
-              <div className="text-cyan-400 font-mono">
-                {motorState.intensity}%
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Version footer */}
-        <div className="text-center mt-8 text-gray-600 text-xs">
-          Pulsar Command Center v1.0 • Rebirth 5.0
-        </div>
-      </div>
-
-      {/* ========== MODALS ========== */}
-
-      {showAlarmPicker && (
-        <TimePicker
-          hour={config.ALARM_START_HOUR}
-          minute={config.ALARM_START_MINUTE}
-          label="Set Alarm Time"
-          onChange={handleAlarmTimeChange}
-          onClose={() => setShowAlarmPicker(false)}
-        />
-      )}
-
-      {showPwmArray && (
-        <ArrayInput
-          values={config.PWM_STEPS_ARRAY || []}
-          label="PWM Warning Steps"
-          maxItems={40}
-          onChange={(values) => {
-            setConfig(prev => ({ ...prev, PWM_STEPS_ARRAY: values }));
-            sendMessage({ type: 'setPwmArray', values });
-          }}
-          onClose={() => setShowPwmArray(false)}
-        />
-      )}
-
-      {showMotorPattern && (
-        <ArrayInput
-          values={config.MOTOR_PATTERN || []}
-          label="Motor Pattern (ON/OFF ms)"
-          maxItems={40}
-          onChange={(values) => {
-            setConfig(prev => ({ ...prev, MOTOR_PATTERN: values }));
-            sendMessage({ type: 'setMotorPattern', values });
-          }}
-          onClose={() => setShowMotorPattern(false)}
-        />
-      )}
-
-      {/* Global styles */}
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
+            );
         }
-        .animate-fadeIn {
-          animation: fadeIn 0.2s ease-out;
+        
+        function TimePickerColumn({ value, label, onUp, onDown }) {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px' }}>
+                    <button onClick={onUp} style={{
+                        width: '50px',
+                        height: '40px',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '20px',
+                        cursor: 'pointer'
+                    }}>▲</button>
+                    <div style={{ fontSize: '36px', fontWeight: 'bold', width: '60px', textAlign: 'center' }}>
+                        {value}
+                    </div>
+                    <button onClick={onDown} style={{
+                        width: '50px',
+                        height: '40px',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        color: '#00ffaa',
+                        fontSize: '20px',
+                        cursor: 'pointer'
+                    }}>▼</button>
+                    <div style={{ fontSize: '12px', color: '#00aa88' }}>{label}</div>
+                </div>
+            );
         }
-        .scrollbar-hide::-webkit-scrollbar {
-          display: none;
+        
+        function BottomBar({ onRefresh, onSave }) {
+            return (
+                <div style={{
+                    position: 'fixed',
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    background: '#0a0a0a',
+                    borderTop: '2px solid #00ffaa',
+                    padding: '15px',
+                    display: 'flex',
+                    gap: '10px'
+                }}>
+                    <button
+                        onClick={onRefresh}
+                        style={{
+                            flex: 1,
+                            padding: '18px',
+                            borderRadius: '12px',
+                            border: '2px solid #00ffaa',
+                            background: 'transparent',
+                            color: '#00ffaa',
+                            fontFamily: 'inherit',
+                            fontSize: '16px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        ↻ REFRESH
+                    </button>
+                    <button
+                        onClick={onSave}
+                        style={{
+                            flex: 1,
+                            padding: '18px',
+                            borderRadius: '12px',
+                            border: 'none',
+                            background: 'linear-gradient(135deg, #00aa88, #00ffaa)',
+                            color: '#0a0a0a',
+                            fontFamily: 'inherit',
+                            fontSize: '16px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        💾 SAVE TO DEVICE
+                    </button>
+                </div>
+            );
         }
-        .scrollbar-hide {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
+        
+        function SettingsModal({ host, onSave, onClose }) {
+            const [inputHost, setInputHost] = useState(host);
+            
+            return (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.9)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '20px',
+                    zIndex: 1000
+                }}>
+                    <div style={{
+                        background: '#0d1b0f',
+                        border: '2px solid #00ffaa',
+                        borderRadius: '12px',
+                        padding: '25px',
+                        width: '100%',
+                        maxWidth: '400px'
+                    }}>
+                        <h2 style={{ marginBottom: '20px', color: '#00ffaa' }}>⚙ Settings</h2>
+                        
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', color: '#00aa88' }}>
+                                Pulsar Host Address
+                            </label>
+                            <input
+                                type="text"
+                                value={inputHost}
+                                onChange={(e) => setInputHost(e.target.value)}
+                                placeholder="pulsar.local or 192.168.1.x"
+                                style={{
+                                    width: '100%',
+                                    padding: '12px',
+                                    border: '2px solid #00aa88',
+                                    borderRadius: '8px',
+                                    background: '#1a1a1a',
+                                    color: '#00ffaa',
+                                    fontFamily: 'inherit',
+                                    fontSize: '16px'
+                                }}
+                            />
+                        </div>
+                        
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                            <button
+                                onClick={onClose}
+                                style={{
+                                    flex: 1,
+                                    padding: '15px',
+                                    border: '2px solid #00aa88',
+                                    borderRadius: '8px',
+                                    background: 'transparent',
+                                    color: '#00aa88',
+                                    fontFamily: 'inherit',
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => { onSave(inputHost); onClose(); }}
+                                style={{
+                                    flex: 1,
+                                    padding: '15px',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    background: '#00ffaa',
+                                    color: '#0a0a0a',
+                                    fontFamily: 'inherit',
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
         }
-      `}</style>
-    </div>
-  );
-}
+        
+        function Toast({ message, type }) {
+            const colors = {
+                success: { bg: 'rgba(0, 255, 170, 0.9)', text: '#0a0a0a' },
+                error: { bg: 'rgba(255, 68, 68, 0.9)', text: 'white' },
+                info: { bg: 'rgba(0, 170, 255, 0.9)', text: 'white' }
+            };
+            
+            const c = colors[type] || colors.info;
+            
+            return (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '100px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: c.bg,
+                    color: c.text,
+                    padding: '12px 24px',
+                    borderRadius: '25px',
+                    fontWeight: 'bold',
+                    zIndex: 2000,
+                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+                }}>
+                    {message}
+                </div>
+            );
+        }
+        
+        // ============================================================================
+        // RENDER APP
+        // ============================================================================
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
