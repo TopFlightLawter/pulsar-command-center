@@ -2,6 +2,10 @@
 
 Covers 2, 4, 5, 6, 7, 8, 9, and 10 IR LEDs wired for constant illumination from an ESP32.
 
+> **Recommended build:** ULN2003AN driver + 5 V external supply. See the
+> [ULN2003AN section](#uln2003an-driver--5-v-external-supply) for the configurations
+> to actually build. The MOSFET/12 V content below is retained as a reference alternative.
+
 ---
 
 ## Baseline Assumptions
@@ -333,3 +337,250 @@ If you want software control (e.g., turn off IR when device sleeps), you can cal
 | Gate pull-down | Boot-state safety | 10 kΩ, ¼ W |
 | Current resistors | Set LED current | See table above, ½ W minimum |
 | Decoupling cap | Supply noise | 100 µF electrolytic near supply |
+
+---
+
+---
+
+## ULN2003AN Driver + 5 V External Supply
+
+This section covers the recommended build: standalone IR LEDs, a **ULN2003AN**
+Darlington array IC, and a **5 V supply isolated from the ESP32 circuit**.
+
+### Why the ULN2003AN Works Well Here
+
+- 7 Darlington channels in one DIP-16 package — no discrete transistors or MOSFETs needed
+- Each channel sinks up to **500 mA** (continuous) — more than enough for multiple LED strings
+- Inputs switch on at ~1 V and are fully compatible with **ESP32 3.3 V GPIO** — no level shifter required
+- Built-in 2.7 kΩ base resistors — connect GPIO directly to input pin, nothing in between
+- **Active HIGH:** GPIO HIGH → output sinks current → LEDs on
+
+### Voltage Budget (Why Resistors Change)
+
+The ULN2003AN's Darlington pair drops approximately **1.0 V** (Vce_sat) at 50–100 mA.
+That voltage is gone before it reaches the LEDs, so:
+
+```
+V_available = 5.0 V − 1.0 V (ULN2003AN drop) = 4.0 V for LEDs + resistor
+```
+
+Updated resistor formula:
+
+```
+R = (4.0 − n × Vf) / If
+  = (4.0 − n × 1.2) / 0.05
+```
+
+### Maximum Series Length: 2 LEDs per String
+
+With 5 V and a ULN2003AN, 3 LEDs in series leaves only ~0.4 V across the resistor —
+too little headroom. Any Vf variation (1.2–1.4 V is typical) would cause uncontrolled
+or zero current. **Keep every series string at 2 LEDs maximum.**
+
+### Circuit Topology
+
+```
+                   ┌─ 33Ω ─── [LED] ─── [LED] ─┐
+5V (external) ─────┤                             ├──── OUT1 (ULN2003AN pin 11)
+                   └─ 33Ω ─── [LED] ─── [LED] ─┘          │
+                                                        (sinks to GND internally)
+ESP32 GPIO ──────────────────────────────────────── IN1  (ULN2003AN pin 1)
+
+COM pin (pin 9) ── GND (shared with ESP32 GND)
+```
+
+- **Each parallel string must have its own resistor** — never share one resistor across
+  parallel strings (current will be uneven)
+- All strings on the same channel share one GPIO pin
+- The ULN2003AN COM pin (pin 9) ties to GND and must be common with the ESP32 GND
+
+### Per-Count Configurations (5 V + ULN2003AN)
+
+All configurations below use **one ULN2003AN channel** and **one ESP32 GPIO pin**,
+since all LEDs are constantly on together.
+
+---
+
+#### 2 IR LEDs
+
+```
+5V ──── 33Ω ──── [LED1] ──── [LED2] ──── OUT1
+ESP32 GPIO ──────────────────────────── IN1
+```
+
+| Item | Value |
+|---|---|
+| String layout | 1 × (2 in series) |
+| Resistor | 33 Ω |
+| Current | ~48 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 4 IR LEDs
+
+```
+5V ──┬── 33Ω ──── [LED1] ──── [LED2] ──┐
+     └── 33Ω ──── [LED3] ──── [LED4] ──┴──── OUT1
+ESP32 GPIO ──────────────────────────────── IN1
+```
+
+| Item | Value |
+|---|---|
+| String layout | 2 × (2 in series), parallel |
+| Resistors | 2 × 33 Ω |
+| Current per string | ~48 mA |
+| Total current | ~96 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 5 IR LEDs
+
+```
+5V ──┬── 33Ω ──── [LED1] ──── [LED2] ──┐
+     ├── 33Ω ──── [LED3] ──── [LED4] ──┤
+     └── 56Ω ──── [LED5] ─────────────┴──── OUT1
+ESP32 GPIO ──────────────────────────────── IN1
+```
+
+| Item | Value |
+|---|---|
+| String layout | 2 × (2 in series) + 1 × (1) |
+| Resistors | 2 × 33 Ω + 1 × 56 Ω |
+| Total current | ~144 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 6 IR LEDs
+
+```
+5V ──┬── 33Ω ──── [LED1] ──── [LED2] ──┐
+     ├── 33Ω ──── [LED3] ──── [LED4] ──┤
+     └── 33Ω ──── [LED5] ──── [LED6] ──┴──── OUT1
+ESP32 GPIO ──────────────────────────────── IN1
+```
+
+| Item | Value |
+|---|---|
+| String layout | 3 × (2 in series), parallel |
+| Resistors | 3 × 33 Ω |
+| Total current | ~144 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 7 IR LEDs
+
+| Item | Value |
+|---|---|
+| String layout | 3 × (2 in series) + 1 × (1) |
+| Resistors | 3 × 33 Ω + 1 × 56 Ω |
+| Total current | ~192 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 8 IR LEDs
+
+| Item | Value |
+|---|---|
+| String layout | 4 × (2 in series), parallel |
+| Resistors | 4 × 33 Ω |
+| Total current | ~192 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 9 IR LEDs
+
+| Item | Value |
+|---|---|
+| String layout | 4 × (2 in series) + 1 × (1) |
+| Resistors | 4 × 33 Ω + 1 × 56 Ω |
+| Total current | ~240 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+#### 10 IR LEDs
+
+| Item | Value |
+|---|---|
+| String layout | 5 × (2 in series), parallel |
+| Resistors | 5 × 33 Ω |
+| Total current | ~240 mA |
+| ULN2003AN channels used | 1 |
+| GPIO pins | 1 |
+
+---
+
+### ULN2003AN Quick Reference Table
+
+| LED Count | String Layout | Resistors | Total Current | Channels Used |
+|---|---|---|---|---|
+| 2 | 1 × 2 | 1 × 33 Ω | ~48 mA | 1 |
+| 4 | 2 × 2 | 2 × 33 Ω | ~96 mA | 1 |
+| 5 | 2×2 + 1×1 | 2 × 33 Ω, 1 × 56 Ω | ~144 mA | 1 |
+| 6 | 3 × 2 | 3 × 33 Ω | ~144 mA | 1 |
+| 7 | 3×2 + 1×1 | 3 × 33 Ω, 1 × 56 Ω | ~192 mA | 1 |
+| 8 | 4 × 2 | 4 × 33 Ω | ~192 mA | 1 |
+| 9 | 4×2 + 1×1 | 4 × 33 Ω, 1 × 56 Ω | ~240 mA | 1 |
+| 10 | 5 × 2 | 5 × 33 Ω | ~240 mA | 1 |
+
+All values: Vf = 1.2 V, If = 50 mA target, ULN2003AN Vce_sat = 1.0 V, 5 V supply.
+
+### ULN2003AN Pinout (DIP-16)
+
+```
+         ┌──────────┐
+  IN1  1 │          │ 16  IN2
+  IN3  2 │          │ 15  IN4
+  IN5  3 │          │ 14  IN6
+  IN7  4 │          │ 13  GND (not used for LEDs)
+ OUT7  5 │ULN2003AN │ 12  OUT6
+ OUT5  6 │          │ 11  OUT4 (wait — standard pinout below)
+```
+
+Standard pinout (verify against your datasheet — the above is illustrative):
+
+| Pin | Function |
+|---|---|
+| 1–7 | Inputs (IN1–IN7) — connect to ESP32 GPIO |
+| 8 | GND — connect to common ground |
+| 9 | COM — connect to GND (for LED use; used for inductive flyback on motor loads) |
+| 10–16 | Outputs (OUT7–OUT1) — connect to LED string low-side ends |
+
+> For LED loads, tie COM (pin 9) to GND. The built-in flyback diodes on COM are for
+> inductive loads (motors, relays) and have no effect on LEDs.
+
+### Firmware (Constant On)
+
+```cpp
+#define IR_LED_PIN 25  // connects to ULN2003AN IN1
+
+void setup() {
+  pinMode(IR_LED_PIN, OUTPUT);
+  digitalWrite(IR_LED_PIN, HIGH);  // HIGH = Darlington on = LEDs lit
+}
+
+void loop() {}
+```
+
+### Parts List (ULN2003AN Build)
+
+| Component | Value | Notes |
+|---|---|---|
+| IC | ULN2003AN | DIP-16, 7-channel Darlington array |
+| Current resistors | 33 Ω (pairs), 56 Ω (singles) | ½ W minimum; see table |
+| 5 V supply | External, isolated from ESP32 | Sized for total current + 20% margin |
+| Decoupling cap | 100 µF electrolytic | Across 5 V supply, close to IC |
+| Wire | — | Keep LED supply wiring short and direct |
