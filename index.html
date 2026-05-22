@@ -234,12 +234,19 @@
                     <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
                     
                     {activeTab === 'control' && (
-                        <ControlTab 
+                        <ControlTab
                             alarmState={alarmState}
                             motorState={motorState}
                             onToggleArmed={() => send({ type: 'setAlarmArmed', armed: !alarmState.armed })}
                             onStopAll={() => send({ type: 'stopAll' })}
                             onTest={(pattern) => send({ type: 'testPattern', pattern })}
+                            onQuickSet930PM={() => {
+                                send({ type: 'setConfig', param: 'ALARM_START_HOUR', value: 21 });
+                                send({ type: 'setConfig', param: 'ALARM_START_MINUTE', value: 30 });
+                                send({ type: 'setAlarmArmed', armed: true });
+                                send({ type: 'saveToFlash' });
+                                showToast('Alarm set: Tonight 9:30 PM — Armed & Saved!', 'success');
+                            }}
                         />
                     )}
                     
@@ -443,10 +450,17 @@
         // ============================================================================
         // CONTROL TAB
         // ============================================================================
-        function ControlTab({ alarmState, motorState, onToggleArmed, onStopAll, onTest }) {
+        function ControlTab({ alarmState, motorState, onToggleArmed, onStopAll, onTest, onQuickSet930PM }) {
             return (
                 <>
                     <Panel title="🎯 ALARM STATUS">
+                        <div style={{ marginBottom: '15px' }}>
+                            <ActionButton
+                                label="⏰ SET ALARM: TONIGHT 9:30 PM"
+                                variant="primary"
+                                onClick={onQuickSet930PM}
+                            />
+                        </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                             <span>System Armed</span>
                             <ToggleButton active={alarmState.armed} onClick={onToggleArmed} />
